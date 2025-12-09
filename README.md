@@ -115,11 +115,12 @@ aws s3 ls s3://text-2-sql-buckt/my_model/
 
 **File: `inference.py`**
 ```python
+# inference.py (NEW FILE - create this)
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
-import json
 
 def model_fn(model_dir):
+    """Load model and tokenizer"""
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
     model = AutoModelForSeq2SeqLM.from_pretrained(
         model_dir,
@@ -128,70 +129,65 @@ def model_fn(model_dir):
     )
     return {"model": model, "tokenizer": tokenizer}
 
-def input_fn(request_body, content_type):
-    if isinstance(request_body, bytes):
-        request_body = request_body.decode('utf-8')
-    
-    if content_type == "application/json":
-        try:
-            data = json.loads(request_body)
-            if isinstance(data, dict):
-                return data.get("inputs", str(data))
-            return str(data)
-        except:
-            return request_body
-    return request_body
-
 def predict_fn(data, model_dict):
+    """Run inference"""
     model = model_dict["model"]
     tokenizer = model_dict["tokenizer"]
     
-    if isinstance(data, dict):
-        text = data.get("inputs", data.get("text", str(data)))
-    else:
-        text = str(data)
-    
     inputs = tokenizer(
-        text,
-        return_tensors="pt",
+        data["inputs"], 
+        return_tensors="pt", 
         padding=True,
         truncation=True,
         max_length=512
     ).to(model.device)
     
-    outputs = model.generate(**inputs, max_length=512, num_beams=4)
+    outputs = model.generate(
+        **inputs, 
+        max_length=512,
+        num_beams=1,
+        early_stopping=True
+    )
+    
     result = tokenizer.batch_decode(outputs, skip_special_tokens=True)
     
-    return result[0]
-
-def output_fn(prediction, accept):
-    return json.dumps({"generated_text": prediction})
+    return {"generated_text": result[0]}
 ```
 
 ## Step 5: Deploy Endpoint
 
 **File: `endpoint.py`**
 ```python
+# ep.py
 import sagemaker
 from sagemaker.huggingface import HuggingFaceModel
 
+# -------------------------------
+# CONFIGURATION
+# -------------------------------
 sess = sagemaker.Session()
-role = "arn:aws:iam::<YOUR-ACCOUNT-ID>:role/SageMakerExecutionRole"  # Replace with your ARN from Step 0
-model_data = "s3://text-2-sql-buckt/my_model/model.tar.gz"
+role = "arn:aws:iam::862763500155:role/SageMakerExecutionRole"
+model_data = "s3://text-2-sql-buckt/my_model/model.tar.gz"              # Fixed: must be .tar.gz
 
+# -------------------------------
+# CREATE HUGGING FACE MODEL
+# -------------------------------
 huggingface_model = HuggingFaceModel(
     model_data=model_data,
     role=role,
-    transformers_version="4.51",
-    pytorch_version="2.3",
-    py_version="py310",
-    entry_point="inference.py"
+    transformers_version="4.51",                                        # Can use shorthand
+    pytorch_version="2.6",
+    py_version="py312",
+    entry_point="inference.py"  # Enabled for text2sql
 )
 
+# -------------------------------
+# DEPLOY ENDPOINT ON GPU
+# -------------------------------
 predictor = huggingface_model.deploy(
     initial_instance_count=1,
-    instance_type="ml.g5.xlarge",  # GPU instance
-    endpoint_name="text2sql-endpoint"
+    instance_type="ml.g5.xlarge",
+    endpoint_name="text2sql-endpoint-2"
 )
 
 print("Endpoint deployed successfully!")
@@ -209,18 +205,24 @@ python endpoint.py
 
 **File: `inf.py`**
 ```python
+# if.py
 import sagemaker
 from sagemaker.huggingface import HuggingFacePredictor
 
+# -------------------------------
+# CONFIGURATION
+# -------------------------------
 sess = sagemaker.Session()
-endpoint_name = "text2sql-endpoint"
+endpoint_name = "text2sql-endpoint-2"
 
-predictor = HuggingFacePredictor(
-    endpoint_name=endpoint_name, 
-    sagemaker_session=sess
-)
+# -------------------------------
+# CONNECT TO ENDPOINT
+# -------------------------------
+predictor = HuggingFacePredictor(endpoint_name=endpoint_name, sagemaker_session=sess)
 
-# Define database schema
+# -------------------------------
+# EXAMPLE INFERENCE WITH SCHEMA
+# -------------------------------
 schema = """
 CREATE TABLE customers (
     customer_id INT PRIMARY KEY,
@@ -234,10 +236,14 @@ CREATE TABLE customers (
 """
 
 question = "Show all customers from New York."
-input_text = f"{schema}\n\nQuestion: {question}\nSQL:"
+
+# Format as text-to-sql models typically expect
+input_text = f"Generate SQL for \n\ncontext: {schema}\n\n\query: {question}\nSQL:"
 
 response = predictor.predict({"inputs": input_text})
-print("Model output:", response)
+
+print("Model output:")
+print(response)
 ```
 
 **Run inference:**
