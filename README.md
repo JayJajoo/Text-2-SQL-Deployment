@@ -263,6 +263,12 @@ aws sagemaker describe-endpoint --endpoint-name text2sql-endpoint
 aws sagemaker delete-endpoint --endpoint-name text2sql-endpoint
 ```
 
+## Output
+
+![1765242468409](image/README/1765242468409.png)
+
+![1765242482536](image/README/1765242482536.png)
+
 ## Costs
 
 **ml.g5.xlarge pricing:**
